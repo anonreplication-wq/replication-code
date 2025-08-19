@@ -1,0 +1,102 @@
+import os
+import re
+import pdfplumber
+import pandas as pd
+import pycountry
+
+# ─── CONFIGURATION ─────────────────────────────────────────────────────────────
+PDF_DIR    = r"repository"
+OUTPUT_CSV = os.path.join(PDF_DIR, "mainfile.csv")
+# ────────────────────────────────────────────────────────────────────────────────
+
+# 1) Tech-area keywords (including Defense/Defence, Vaccine(s), Agriculture, Water)
+AREA_KEYWORDS = [
+    "Digital Public Infrastructure", "Digital Identity", "Digital Payments",
+    "E-Governance", "E-Health", "E-Education", "E-Commerce",
+    "Cloud Computing", "Edge Computing", "Data Analytics", "Big Data",
+    "Artificial Intelligence", "AI", "Machine Learning", "Deep Learning",
+    "Neural Network", "Computer Vision", "Natural Language Processing",
+    "Robotics", "Autonomous Vehicle", "Drone", "UAV", "Internet of Things", "IoT",
+    "5G", "6G", "Quantum Computing", "Quantum Communication",
+    "Blockchain", "Distributed Ledger", "Fintech", "API", "Digital Twin",
+    "Smart Contract", "Clean Tech", "Green Hydrogen", "Renewable Energy",
+    "Wind Energy", "Solar Alliance", "Bio-energy", "3D Printing",
+    "Semiconductor", "Nanotechnology", "Photonics", "Supercomputing",
+    "Augmented Reality", "Virtual Reality", "Mixed Reality",
+    "Cyber Security", "Data Protection", "Space", "Outer Space",
+    # Agriculture & Water
+    "Agriculture", "Agri-technology", "Water", "Water Resources",
+    "Water Management", "Irrigation",
+    # Health / Pharma
+    "Vaccine", "Vaccines", "pharma", "pharma", "pharmaceutical", "health"
+
+]
+AREA_PATTERNS = [
+    re.compile(r"\b" + re.escape(kw).replace(r"\ ", r"\s*") + r"\b", re.IGNORECASE)
+    for kw in AREA_KEYWORDS
+]
+
+# 2) Build list of country names (excluding India)
+COUNTRIES = [country.name for country in pycountry.countries if country.name.lower() != "india"]
+# Add common names and official names if needed
+for country in pycountry.countries:
+    if hasattr(country, 'official_name'):
+        COUNTRIES.append(country.official_name)
+COUNTRY_PATTERNS = [
+    (country, re.compile(r"\b" + re.escape(country) + r"\b", re.IGNORECASE))
+    for country in set(COUNTRIES)
+]
+
+def extract_country_by_text(text):
+    """Find the first occurring country name (other than India) in the text."""
+    earliest = None
+    found_country = None
+    for country, pattern in COUNTRY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            idx = match.start()
+            if earliest is None or idx < earliest:
+                earliest = idx
+                found_country = country
+    return found_country or "Unknown"
+
+def extract_areas(pdf_path):
+    """Return list of {'Country','Area of Cooperation'} for this PDF."""
+    # Extract full text
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    # Determine country by scanning text
+    country = extract_country_by_text(full_text)
+    rows = []
+    # Split into paragraphs
+    for para in re.split(r"\n{2,}", full_text):
+        if not para.strip():
+            continue
+        for pat, kw in zip(AREA_PATTERNS, AREA_KEYWORDS):
+            if pat.search(para):
+                rows.append({
+                    "Country": country,
+                    "Area of Cooperation": kw
+                })
+    return rows
+
+def main():
+    all_rows = []
+    for fname in os.listdir(PDF_DIR):
+        if not fname.lower().endswith(".pdf"):
+            continue
+        path = os.path.join(PDF_DIR, fname)
+        try:
+            hits = extract_areas(path)
+            print(f"{fname} → {len(hits)} area(s), Country: {hits[0]['Country'] if hits else 'None'}")
+            all_rows.extend(hits)
+        except Exception as e:
+            print(f"⚠️ Error on {fname}: {e}")
+
+    # Dedupe and save
+    df = pd.DataFrame(all_rows).drop_duplicates()
+    df.to_csv(OUTPUT_CSV, index=False)
+    print(f"\n✅ Extracted {len(df)} unique Country–Area rows to:\n   {OUTPUT_CSV}")
+
+if __name__ == "__main__":
+    main()
